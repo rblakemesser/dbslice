@@ -1,0 +1,10 @@
+source_schema: minicom
+dest_schema: stage
+tmp_schema: tmp
+shards_schema: shards
+
+precopy:
+  schema_only:
+    - shipment
+  full_copy:
+    - coupon

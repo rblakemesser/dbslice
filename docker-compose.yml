@@ -1,0 +1,35 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./tests/fixtures/minicom:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "54329:5432" # optional host exposure for local debugging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+      start_period: 2s
+
+  tests:
+    image: python:3.11-slim
+    working_dir: /app
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./:/app
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -lc "pip install -U pip && \
+               pip install -e . && \
+               pip install -q pytest && \
+               pytest -q"
