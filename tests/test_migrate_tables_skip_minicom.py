@@ -30,14 +30,15 @@ def test_migrate_tables_skips_when_present(tmp_path):
         with conn.cursor() as cur:
             cur.execute("SELECT count(*), max(id) FROM stage_skip.product")
             before_count, max_id = cur.fetchone()
-            # Insert a synthetic row with id beyond current max
+            # Insert a synthetic row with id beyond current max and unique SKU suffix
+            new_id = int(max_id or 0) + 1000
             cur.execute(
                 """
                 INSERT INTO stage_skip.product (id, store_id, sku, price_cents, deleted_at)
-                SELECT %s, store_id, sku || '-X', price_cents, deleted_at
+                SELECT %s, store_id, sku || '-' || %s::text, price_cents, deleted_at
                 FROM stage_skip.product LIMIT 1
                 """,
-                (int(max_id or 0) + 1000,),
+                (new_id, new_id),
             )
             conn.commit()
 

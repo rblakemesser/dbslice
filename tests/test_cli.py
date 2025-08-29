@@ -78,4 +78,5 @@ def test_check_connection_success(tmp_path):
     empty_env_path.write_text("\n")
     rc, out, err = run_cli(["--env", str(empty_env_path), "--check-connection"], env={"DATABASE_URL": url})
     assert rc == 0
-    assert "Connection OK" in out
+    env_out = yaml.safe_load(out)
+    assert env_out['run']['result'] == 'ok'

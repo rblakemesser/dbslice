@@ -22,12 +22,44 @@ def load_config(path: str) -> Dict[str, Any]:
         'schema_only': list(precopy.get('schema_only') or []),
         'full_copy': list(precopy.get('full_copy') or []),
     }
-    # Roots (generic; forward-looking)
-    roots = data.get('roots') or []
-    cfg['roots'] = list(roots)
-    # Phases/families (forward-looking)
+    # Table groups (no backward-compat: single source of truth)
     cfg['phases'] = list(data.get('phases') or [])
-    cfg['families'] = list(data.get('families') or [])
+    cfg['table_groups'] = list(data.get('table_groups') or [])
+
+    # Derive roots from table_groups.root.selector (single source of truth)
+    roots: List[Dict[str, Any]] = []
+    for g in cfg['table_groups']:
+        if not isinstance(g, dict):
+            continue
+        root = g.get('root') or {}
+        if not isinstance(root, dict):
+            continue
+        # Use explicit selection alias if provided; otherwise default to group name
+        sel_name = root.get('selection') or g.get('name')
+        selector = root.get('selector') or None
+        if not sel_name or not selector:
+            # If no selector is defined here, this group depends on another root's selection
+            continue
+        r: Dict[str, Any] = {
+            'name': str(sel_name),
+            'table': str(root.get('table') or g.get('name') or ''),
+            'id_col': str(root.get('id_col') or 'id'),
+            'selector': selector,
+        }
+        if root.get('ensure') is not None:
+            r['ensure'] = list(root.get('ensure') or [])
+        if root.get('phase') is not None:
+            r['phase'] = root.get('phase')
+        if root.get('shard') is not None:
+            r['shard'] = root.get('shard')
+        roots.append(r)
+    cfg['roots'] = roots
+    # Neuter (redaction) config: pass through as-is (dict)
+    neuter = data.get('neuter') or {}
+    if isinstance(neuter, dict):
+        cfg['neuter'] = neuter
+    else:
+        cfg['neuter'] = {}
     # Reconcile toggles (defaults enabled)
     rec = data.get('reconcile') or {}
     def _bool(key: str, default: bool = True) -> bool:

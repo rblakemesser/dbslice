@@ -18,7 +18,8 @@ def test_audit_tables_all_reports_missing_stage(tmp_path):
         "--audit-tables",
     ], env={"DATABASE_URL": "postgresql://postgres:postgres@db:5432/postgres"})
     assert rc == 0, err
-    data = yaml.safe_load(out)
+    env = yaml.safe_load(out)
+    data = env['run']
     # Expect several tables reported (at least store/product/order, etc.)
     assert 'store' in data
     assert data['store']['exists_diff']['dst_missing'] is True

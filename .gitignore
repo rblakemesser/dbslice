@@ -50,6 +50,7 @@ pytestdebug.log
 
 # Logs
 *.log
+logs/
 
 # Local profiles
 profiles/*.yml
