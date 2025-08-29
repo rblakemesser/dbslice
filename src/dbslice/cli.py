@@ -61,7 +61,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--validate-parallel', type=int, help='Global concurrency for FK validation across tables (default: 16; use 1 to run sequentially)')
     p.add_argument('--skip-validate-fk', action='store_true', help='Skip validating NOT VALID foreign keys (adds as NOT VALID only)')
     p.add_argument('--fanout-parallel', type=int, help='Global concurrency for shard fanout (CTAS and inserts) using async connections')
-    p.add_argument('--neuter-only', action='store_true', help='Run neuter step only (per config) against dest schema')
+    p.add_argument('--pre-migrate', action='store_true', help='Run pre-migrate step: truncate tables (CASCADE) and execute SQL before any migration')
+    p.add_argument('--neuter-only', nargs='?', const='__ALL__', help='Run neuter step only (per config) against dest schema; optionally pass a single table name to limit scope')
     p.add_argument('--migrate', action='store_true', help='Run full migration pipeline (precopy + table groups)')
     p.add_argument('--migrate-tables', nargs='?', const='__ALL__', help='Migrate only table groups (root+deps). Optional comma-separated list; defaults to all table groups when no value is given')
     p.add_argument('--restart', action='store_true', help='Drop and recreate dest schema only; combine with --migrate or --migrate-tables to proceed')
@@ -168,7 +169,7 @@ def main() -> int:
         _emit(req, {"result": "reset", "table_groups": requested}, start_ts)
         return 0
 
-    if args.neuter_only:
+    if args.neuter_only is not None:
         cfg_path = args.config or os.environ.get('DBSLICE_CONFIG')
         if not cfg_path:
             msg = '--config is required for --neuter-only (or set DBSLICE_CONFIG in env).'
@@ -182,9 +183,31 @@ def main() -> int:
             print(msg, file=sys.stderr)
             _emit({"action": "neuter_only", "args": sys.argv[1:], "env_file": args.env, "config": cfg_path, "database_url": url}, {"result": "error", "error": msg}, start_ts)
             return 2
+        only_table = None if args.neuter_only == '__ALL__' else str(args.neuter_only)
         with psycopg.connect(url, connect_timeout=5) as conn:
-            run = run_neuter(conn, cfg)
-        req = {"action": "neuter_only", "args": sys.argv[1:], "env_file": args.env, "config": cfg_path, "database_url": url}
+            run = run_neuter(conn, cfg, only_table=only_table)
+        req = {"action": "neuter_only", "args": sys.argv[1:], "env_file": args.env, "config": cfg_path, "database_url": url, "only_table": only_table}
+        _emit(req, run, start_ts)
+        return 0
+
+    if args.pre_migrate:
+        cfg_path = args.config or os.environ.get('DBSLICE_CONFIG')
+        if not cfg_path:
+            msg = '--config is required for --pre-migrate (or set DBSLICE_CONFIG in env).'
+            print(msg, file=sys.stderr)
+            _emit({"action": "pre_migrate", "args": sys.argv[1:], "env_file": args.env, "config": cfg_path, "database_url": os.environ.get('DATABASE_URL')}, {"result": "error", "error": msg}, start_ts)
+            return 2
+        cfg = load_config(cfg_path)
+        url = os.environ.get('DATABASE_URL')
+        if not url:
+            msg = 'DATABASE_URL is not set (load it via .env or environment)'
+            print(msg, file=sys.stderr)
+            _emit({"action": "pre_migrate", "args": sys.argv[1:], "env_file": args.env, "config": cfg_path, "database_url": url}, {"result": "error", "error": msg}, start_ts)
+            return 2
+        from .commands.pre_migrate import run_pre_migrate
+        with psycopg.connect(url, connect_timeout=5) as conn:
+            run = run_pre_migrate(conn, cfg)
+        req = {"action": "pre_migrate", "args": sys.argv[1:], "env_file": args.env, "config": cfg_path, "database_url": url}
         _emit(req, run, start_ts)
         return 0
 

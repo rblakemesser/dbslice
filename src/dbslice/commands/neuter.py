@@ -20,6 +20,6 @@ Failure policy
 from ..dbutil import neuter_data
 
 
-def run_neuter(conn, cfg: dict) -> dict:
-    changed = neuter_data(conn, cfg)
+def run_neuter(conn, cfg: dict, *, only_table: str | None = None) -> dict:
+    changed = neuter_data(conn, cfg, only_table=only_table)
     return {"changed": bool(changed), "result": "neuter_applied" if changed else "neuter_skipped"}

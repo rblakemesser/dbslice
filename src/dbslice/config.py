@@ -60,6 +60,12 @@ def load_config(path: str) -> Dict[str, Any]:
         cfg['neuter'] = neuter
     else:
         cfg['neuter'] = {}
+    # Pre-migrate (truncate + sql) config: pass through as-is (dict)
+    pre_migrate = data.get('pre_migrate') or {}
+    if isinstance(pre_migrate, dict):
+        cfg['pre_migrate'] = pre_migrate
+    else:
+        cfg['pre_migrate'] = {}
     # Reconcile toggles (defaults enabled)
     rec = data.get('reconcile') or {}
     def _bool(key: str, default: bool = True) -> bool:
