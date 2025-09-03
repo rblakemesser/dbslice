@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 import asyncio
+import re
 import psycopg
 
 from ..dbutil import (
@@ -468,5 +469,102 @@ def run_families(
             pass
         else:
             reset_schema(conn, shards_schema)
+
+    # After all tables are created and set to LOGGED, build non-PK indexes asynchronously per table
+    # Always require DSN for async index creation
+    if not dsn:
+        raise RuntimeError('DSN is required for async index creation')
+
+    created_tables = []
+    for qname in created:
+        try:
+            _schema, _tbl = qname.split('.', 1)
+        except Exception:
+            continue
+        if _schema.strip('"') == dst:
+            created_tables.append(_tbl.strip('"'))
+
+    # Deduplicate tables
+    created_tables = sorted(set(created_tables))
+
+    async def _fetch_indexes(aconn, schema: str, table: str) -> Dict[str, str]:
+        async with aconn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT indexname, indexdef
+                FROM pg_indexes
+                WHERE schemaname = %s AND tablename = %s
+                ORDER BY indexname
+                """,
+                (schema, table),
+            )
+            rows = await cur.fetchall() or []
+        return {str(name): str(defn) for name, defn in rows}
+
+    def _prepare_indexdef_for_dst(idxdef: str, *, src_schema: str, dst_schema: str, table: str) -> str:
+        out = idxdef
+        out = re.sub(
+            rf"\bON\s+{re.escape(src_schema)}\.{re.escape(table)}\b",
+            f'ON {dst_schema}."{table}"',
+            out,
+            flags=re.IGNORECASE,
+        )
+        out = re.sub(
+            rf"\bON\s+\"{re.escape(src_schema)}\"\s*\.\s*\"{re.escape(table)}\"\b",
+            f'ON "{dst_schema}"."{table}"',
+            out,
+            flags=re.IGNORECASE,
+        )
+        out = re.sub(
+            r"\bON\s+(\"?[A-Za-z_][\w$]*\"?)\s*\.\s*(\"?[A-Za-z_][\w$]*\"?)",
+            f'ON "{dst_schema}"."{table}"',
+            out,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        if out.startswith("CREATE UNIQUE INDEX "):
+            out = out.replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX IF NOT EXISTS ", 1)
+        elif out.startswith("CREATE INDEX "):
+            out = out.replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1)
+        return out
+
+    async def _create_indexes_for_table(table: str) -> int:
+        created_idx = 0
+        async with await psycopg.AsyncConnection.connect(dsn, connect_timeout=5) as aconn:  # type: ignore[attr-defined]
+            src_idx = await _fetch_indexes(aconn, src, table)
+            dst_idx = await _fetch_indexes(aconn, dst, table)
+            # Remove PK entries
+            src_idx = {k: v for k, v in src_idx.items() if not k.endswith('_pkey')}
+            dst_idx = {k: v for k, v in dst_idx.items() if not k.endswith('_pkey')}
+            for name, idxdef in src_idx.items():
+                if name in dst_idx:
+                    continue
+                stmt = _prepare_indexdef_for_dst(idxdef, src_schema=src, dst_schema=dst, table=table)
+                stmt = stmt.replace(" IF NOT EXISTS", "")
+                stmt = re.sub(r'^(CREATE\s+UNIQUE\s+INDEX\s+)(\S+)', r'\\1"' + name + '"', stmt)
+                stmt = re.sub(r'^(CREATE\s+INDEX\s+)(\S+)', r'\\1"' + name + '"', stmt)
+                async with aconn.cursor() as cur:
+                    await cur.execute(stmt)
+                await aconn.commit()
+                created_idx += 1
+        return created_idx
+
+    par_idx = max(1, int(fanout_parallel or DEFAULT_FANOUT_PARALLEL))
+    async def _runner_indexes() -> None:
+        sem = asyncio.Semaphore(par_idx)
+        errors: list[Exception] = []
+        async def _bounded(t: str) -> None:
+            async with sem:
+                try:
+                    await _create_indexes_for_table(t)
+                except Exception as e:
+                    errors.append(e)
+        tasks = [asyncio.create_task(_bounded(t)) for t in created_tables]
+        await asyncio.gather(*tasks)
+        if errors:
+            raise errors[0]
+
+    if created_tables:
+        asyncio.run(_runner_indexes())
 
     return created
